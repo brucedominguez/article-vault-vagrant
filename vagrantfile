@@ -1,0 +1,34 @@
+BOX_IMAGE = "bento/ubuntu-18.04"
+
+Vagrant.configure("2") do |config|
+  config.vm.provider "virtualbox" do |vb|
+    vb.customize ["modifyvm", :id, "--memory", "512"]
+    vb.customize ["modifyvm", :id, "--cpus", "1"]
+    vb.customize ["modifyvm", :id, "--cpuexecutioncap", "50"]
+    vb.customize ["modifyvm", :id, "--chipset", "ich9"]
+    vb.customize ["modifyvm", :id, "--ioapic", "on"]
+  end
+  config.vm.box = BOX_IMAGE
+  config.vm.define "vault", primary: true do |vault|
+    vault.vm.network :private_network, ip: "192.168.50.100"
+    vault.vm.network :forwarded_port, guest: 8200, host: 8200
+    vault.vm.hostname = "vault"
+    vault.vm.provision "ansible" do |ansible|
+    ansible.playbook = "./vault/install.yml"
+    end
+  end
+  config.vm.define "client" do |client|
+    client.vm.network :private_network, ip: "192.168.50.101"
+    client.vm.hostname = "client"
+    client.vm.provision "ansible" do |ansible|
+    ansible.playbook = "./client/install.yml"
+    end
+  end
+  config.vm.define "otp" do |client|
+    client.vm.network :private_network, ip: "192.168.50.102"
+    client.vm.hostname = "otp"
+    client.vm.provision "ansible" do |ansible|
+    ansible.playbook = "./ssh-otp/install.yml"
+    end
+  end
+end

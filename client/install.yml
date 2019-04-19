@@ -1,0 +1,61 @@
+---
+- hosts: all
+  remote_user: ubuntu
+  become: yes
+  connection: ssh
+
+  vars:
+      vault_version: "1.0.3"
+
+  pre_tasks:
+    - name: Update apt packages
+      become: true
+      apt:
+        update_cache: yes
+        cache_valid_time: 86400 #One day
+
+    - name: Install a list basic packages
+      apt:
+         name: "{{ packages }}"
+      vars:
+        packages:
+        - curl
+        - git
+        - htop
+        - jq
+        - tree
+        - vim
+        - wget
+        - unzip
+        - sshpass
+        - systemd
+  tasks:
+    - name: Download Vault
+      get_url:
+        url: https://releases.hashicorp.com/vault/{{ vault_version }}/vault_{{ vault_version }}_linux_amd64.zip
+        dest: /tmp/vault_{{ vault_version }}_linux_amd64.zip
+      tags:
+        - vault
+    - name: Unzip vault
+      unarchive:
+        src: /tmp/vault_{{ vault_version }}_linux_amd64.zip
+        dest: /usr/local/bin/
+        copy: no
+        owner: root
+        group: root
+      tags:
+        - vault
+    - name: Install Vault Autocomplete
+      command: vault -autocomplete-install
+      ignore_errors: yes 
+      tags:
+        - vault
+    - name: update /etc/hosts file
+      lineinfile:
+        path: /etc/hosts
+        line: '{{ item }}'
+        create: yes
+      with_items: 
+        - 192.168.50.100  vault vault.example.com
+        - 192.168.50.101  client client.example.com
+        - 192.168.50.102  otp otp.example.com

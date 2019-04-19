@@ -1,0 +1,70 @@
+---
+- hosts: all
+  remote_user: ubuntu
+  become: yes
+  connection: ssh
+  pre_tasks:
+    - name: Update apt packages
+      become: true
+      apt:
+        update_cache: yes
+        cache_valid_time: 86400 #One day
+
+    - name: Install a list basic packages
+      apt:
+         name: "{{ packages }}"
+      vars:
+        packages:
+        - curl
+        - git
+        - htop
+        - jq
+        - tree
+        - vim
+        - wget
+        - unzip
+        - sshpass
+        - systemd
+  tasks:
+    - name: Create vault-ssh-helper.d directory
+      file: 
+       path: /etc/vault-ssh-helper.d
+       state: directory
+    - name: Download Vault SSH Helper
+      get_url:
+        url: https://releases.hashicorp.com/vault-ssh-helper/0.1.4/vault-ssh-helper_0.1.4_linux_amd64.zip
+        dest: /tmp/vault-ssh-helper_0.1.4_linux_amd64.zip
+    - name: Unzip Vault SSH Helperl
+      unarchive:
+        src: /tmp/vault-ssh-helper_0.1.4_linux_amd64.zip
+        dest: /usr/local/bin
+        copy: no
+        owner: root
+        group: root
+        mode: 0755
+    - name: Copy config.hcl
+      copy:
+        src: ../ssh-otp/config.hcl
+        dest: /etc/vault-ssh-helper.d/config.hcl
+    - name: Copy sshd file
+      copy:
+        src:  ../ssh-otp/sshd
+        dest: /etc/pam.d/sshd
+    - name: Copy sshd_config file
+      copy:
+        src: ../ssh-otp/sshd_config
+        dest: /etc/ssh/sshd_config
+    - name: start Consul and Vault
+      systemd:
+        name: sshd
+        state: restarted
+
+    - name: update /etc/hosts file
+      lineinfile:
+        path: /etc/hosts
+        line: '{{ item }}'
+        create: yes
+      with_items: 
+        - 192.168.50.100  vault vault.example.com
+        - 192.168.50.101  client client.example.com
+        - 192.168.50.102  otp otp.example.com

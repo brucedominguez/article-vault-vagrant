@@ -1,0 +1,238 @@
+---
+- hosts: all
+  remote_user: ubuntu
+  become: yes
+  connection: ssh
+  pre_tasks:
+    - name: Update apt packages
+      become: true
+      apt:
+        update_cache: yes
+        cache_valid_time: 86400 #One day
+
+    - name: Install a list basic packages
+      apt:
+         name: "{{ packages }}"
+      vars:
+        packages:
+        - curl
+        - git
+        - htop
+        - jq
+        - tree
+        - vim
+        - wget
+        - unzip
+        - sshpass
+        - systemd
+  vars:
+    vault_user: "vault"
+    vault_group: "vault"
+    vault_version: "1.1.1"
+    consul_version: "1.4.4"
+    vault_server: "192.168.50.100"
+    consul_server_ip: "192.168.50.100"
+    consul_config_dir: "/etc/systemd/system/consul.d"
+    unseal_keys_dir_output: "{{ playbook_dir }}/unsealKey"
+    root_token_dir_output: "{{ playbook_dir }}/rootKey"
+
+  tasks:
+
+    - name: Creating vault user group
+      group: 
+         name: "{{ vault_group }}"
+      become: true
+    - name: Create Vault User
+      user:
+        name: "{{ vault_user }}"
+        system: yes
+        group: "{{ vault_group }}"
+        shell: "/usr/sbin/nologin"
+        comment: "vault nologin User"
+        home: /etc/vault.d
+
+    - name: Download Consul
+      get_url:
+        url: https://releases.hashicorp.com/consul/{{ consul_version }}/consul_{{ consul_version }}_linux_amd64.zip
+        dest: /tmp/consul_{{ consul_version }}_linux_amd64.zip
+      tags:
+        - consul
+
+    - name: Unzip Consul
+      unarchive:
+        src: /tmp/consul_{{ consul_version }}_linux_amd64.zip
+        dest: /usr/local/bin
+        copy: no
+        owner: "{{ vault_user }}"
+        group: "{{ vault_group }}"
+        mode: 0755
+      tags:
+        - consul
+
+    - name: Make Consul a service
+      copy: 
+        src: ../vault/config/consulservice
+        dest: /etc/systemd/system/consul.service 
+      tags:
+        - consul
+
+    - name: Ensure config directory exists
+      file: 
+       path: "{{ consul_config_dir }}"
+       state: directory
+      tags:
+        - consul
+
+    - name: Deploy consul config
+      template: 
+        src: ../vault/config/init.json.j2
+        dest: "{{consul_config_dir}}/init.json"
+        mode: 0664
+      tags:
+        - consul
+
+    - name: Download Vault
+      get_url:
+        url: https://releases.hashicorp.com/vault/{{ vault_version }}/vault_{{ vault_version }}_linux_amd64.zip
+        dest: /tmp/vault_{{ vault_version }}_linux_amd64.zip
+      tags:
+        - vault
+    - name: Unzip vault
+      unarchive:
+        src: /tmp/vault_{{ vault_version }}_linux_amd64.zip
+        dest: /usr/local/bin/
+        copy: no
+        owner: root
+        group: root
+      tags:
+        - vault
+
+    - name: Set vault binary capabilities
+      capabilities:
+        path: /usr/local/bin/vault
+        capability: cap_ipc_lock+ep
+        state: present
+      tags:
+        - vault
+
+    - name: Create vault folder
+      file:
+        path: /etc/vault.d
+        state: directory
+        owner: "{{ vault_user }}"
+        group: "{{ vault_group }}"
+      tags:
+        - vault 
+    - name: Copy systemd init file
+      template:
+        src: ../vault/config/vaultservice
+        dest: /etc/systemd/system/vault.service
+      tags:
+        - vault
+    - name: Daemon reload systemd in case the binaries upgraded
+      command: systemctl daemon-reload
+      become: true
+      tags:
+        - vault
+
+    - name: Copy config.hcl
+      copy:
+        src: ../vault/config/config.hcl
+        dest: /etc/vault.d/vault.hcl
+        owner: "{{ vault_group }}"
+        group: "{{ vault_user }}"
+        mode: 0640
+      tags:
+        - vault
+
+    - name: start Consul and Vault
+      systemd:
+        name: "{{ item }}"
+        enabled: yes
+        state: started
+      with_items:
+        - 'consul'
+        - 'vault'
+      tags:
+        - services
+
+    - name: Install Vault Autocomplete
+      command: vault -autocomplete-install
+      ignore_errors: yes 
+      tags:
+        - vault
+
+    - name: update /etc/hosts file
+      lineinfile:
+        path: /etc/hosts
+        line: '{{ item }}'
+        create: yes
+      with_items: 
+        - 192.168.50.100  vault vault.example.com
+        - 192.168.50.101  client client.example.com
+        - 192.168.50.102  otp otp.example.com
+
+    - name: Create unseal directories
+      file:
+       path: "{{ unseal_keys_dir_output }}"
+       state: directory
+      delegate_to: localhost
+      tags:
+        - vault_init
+
+    - name: Create root key directories
+      file:
+       path: "{{ root_token_dir_output }}"
+       state: directory
+      delegate_to: localhost
+      tags:
+        - vault_init
+
+    - name: Initialise Vault operator
+      shell: vault operator init -key-shares=5 -key-threshold=3 -format json
+      environment:
+       VAULT_ADDR: "http://127.0.0.1:8200"
+      register: vault_init_results
+      tags:
+        - vault_init
+
+    - name: Parse output of vault init
+      set_fact:
+        vault_init_parsed: "{{ vault_init_results.stdout | from_json }}"
+      tags:
+        - vault_init
+
+    - name: Write unseal keys to files
+      copy:
+        dest:  "{{ unseal_keys_dir_output }}/unseal_key_{{ item.0 }}"
+        content: "{{ item.1 }}"
+      with_indexed_items: "{{ vault_init_parsed.unseal_keys_hex }}"
+      delegate_to: localhost
+      tags:
+        - vault_init
+
+    - name: Write root token to file
+      copy:
+       content: "{{ vault_init_parsed.root_token }}"
+       dest: "{{root_token_dir_output}}/rootkey"
+      delegate_to: localhost
+      tags:
+        - vault_init
+
+    - name: Reading unseal key contents
+      command: cat {{item}}
+      register: unseal_keys
+      with_fileglob: "{{ unseal_keys_dir_output }}/*"
+      delegate_to: localhost
+      become: no
+      tags:
+        - vault_unseal
+
+    - name: Unseal vault with unseal keys
+      shell: |
+        vault operator unseal {{ item.stdout }}
+      environment:
+       VAULT_ADDR: "http://127.0.0.1:8200"
+      with_items: "{{unseal_keys.results}}"
+      tags:
+        - vault_unseal
